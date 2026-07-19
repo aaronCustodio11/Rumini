@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "176265089519",
+    "project_id": "rumini-5f6ff",
+    "storage_bucket": "rumini-5f6ff.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:176265089519:android:629d90d78d4661a75d661a",
+        "android_client_info": {
+          "package_name": "com.example.rumini"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCbDymQmM-tJlpVA1wCVtrndXR2dzxmmnc"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
