@@ -2,6 +2,9 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:rumini/services/crisis_detector.dart';
+import 'package:rumini/services/chatbot_ai_service.dart';
+import 'package:rumini/services/chatbot_knowledge_service.dart';
 
 class ChatbotFAB extends StatefulWidget {
   const ChatbotFAB({super.key, required Map<String, dynamic> userData});
@@ -18,8 +21,6 @@ class _ChatbotFABState extends State<ChatbotFAB> {
       ValueNotifier([]);
   final TextEditingController _controller = TextEditingController();
   bool _isTyping = false;
-  int _dotIndex = 0;
-  Timer? _dotTimer;
   StreamSubscription? _messageSubscription; // NEW: Add this line
   String studId = '';
   String userName = 'User';
@@ -34,7 +35,6 @@ class _ChatbotFABState extends State<ChatbotFAB> {
   @override
   void dispose() {
     _messageSubscription?.cancel();
-    _dotTimer?.cancel();
     _controller.dispose();
     _messageNotifier.dispose();
     super.dispose();
@@ -71,6 +71,11 @@ class _ChatbotFABState extends State<ChatbotFAB> {
       await _loadMessages();
       await _checkWelcomeMessageStatus();
       _startMessageListener(); // NEW: Start listening for real-time updates
+
+      // NLP chatbot: load remote crisis keywords + seed knowledge base
+      // (both are best-effort and never block the chat UI).
+      CrisisDetector.loadRemoteKeywords();
+      ChatbotKnowledgeService.ensureSeeded();
     }
   }
 
@@ -101,18 +106,17 @@ class _ChatbotFABState extends State<ChatbotFAB> {
 
     if (!hasSeenWelcome) {
       final welcomeMessageText =
-          "Hello! I'm your mental health chatbot. I'm here to offer support and guidance. Please note that our conversations are monitored by System Admins and Counselors to help ensure your safety. I also have limited capabilities since I'm built for Frequently Asked Questions, but I’ll do my best to help. What can I do for you today?";
+          "Hi! I'm your guidance companion chatbot. I can listen, help you "
+          "reflect on how you're feeling, and answer questions about the "
+          "guidance office. Please note that our conversations are monitored "
+          "by System Admins and Counselors to help ensure your safety — and "
+          "I'm not a licensed therapist, so for serious concerns I'll always "
+          "help you connect with a real counselor. What's on your mind today?";
 
       _messageNotifier.value = List.from(_messageNotifier.value)
         ..add({'sender': 'Bot', 'typing': true});
       setState(() {
         _isTyping = true;
-      });
-
-      _dotTimer = Timer.periodic(Duration(milliseconds: 500), (timer) {
-        setState(() {
-          _dotIndex = (_dotIndex + 1) % 3;
-        });
       });
 
       await Future.delayed(Duration(seconds: 2));
@@ -122,7 +126,6 @@ class _ChatbotFABState extends State<ChatbotFAB> {
         ..add({'sender': 'Bot', 'text': welcomeMessageText});
 
       _isTyping = false;
-      _dotTimer?.cancel();
 
       await FirebaseFirestore.instance
           .collection('Users')
@@ -164,6 +167,10 @@ class _ChatbotFABState extends State<ChatbotFAB> {
 
     _controller.clear();
 
+    // Snapshot the conversation BEFORE appending the new turn — this is what
+    // gets sent to the AI proxy as context.
+    final history = List<Map<String, dynamic>>.from(_messageNotifier.value);
+
     // Save user message to Firestore only
     await FirebaseFirestore.instance
         .collection('Users')
@@ -180,161 +187,137 @@ class _ChatbotFABState extends State<ChatbotFAB> {
       _isTyping = true;
     });
 
-    _dotTimer = Timer.periodic(Duration(milliseconds: 500), (timer) {
-      setState(() {
-        _dotIndex = (_dotIndex + 1) % 3;
-      });
-    });
-
-    await Future.delayed(Duration(seconds: 2));
-    var botResponse = await getBotResponse(userMessage);
+    // Run the pipeline while the typing indicator is visible, keeping a
+    // minimum "thinking" time so the UI doesn't flicker on fast replies.
+    Map<String, dynamic> botResponse;
+    try {
+      final results = await Future.wait([
+        Future.delayed(Duration(milliseconds: 1200)),
+        _computeBotResponse(userMessage, history),
+      ]);
+      botResponse = results[1] as Map<String, dynamic>;
+    } catch (e) {
+      botResponse = {
+        'text':
+            "I'm sorry, I didn't understand that. Would you like to send this question to your counselor?",
+        'escalate': true,
+        'src': 'error',
+      };
+    }
 
     // Hide typing indicator
     setState(() {
       _isTyping = false;
     });
-    _dotTimer?.cancel();
 
-    if (botResponse.containsKey('responses')) {
-      showResponseOptions(botResponse['responses']);
-    } else {
-      // ✅ Save bot response to Firestore WITH follow_up field
-      Map<String, dynamic> messageData = {
-        'sender': 'Bot',
-        'text':
-            botResponse['text'] ?? 'Sorry, I didn\'t quite understand that.',
-        'timestamp': FieldValue.serverTimestamp(),
-      };
+    // Save bot response to Firestore WITH follow_up / flags
+    Map<String, dynamic> messageData = {
+      'sender': 'Bot',
+      'text': botResponse['text'] ?? 'Sorry, I didn\'t quite understand that.',
+      'timestamp': FieldValue.serverTimestamp(),
+    };
 
-      // ✅ Add follow_up if it exists
-      if (botResponse.containsKey('follow_up') &&
-          botResponse['follow_up'] != null) {
-        messageData['follow_up'] = botResponse['follow_up'];
-      }
-
-      await FirebaseFirestore.instance
-          .collection('Users')
-          .doc(studId)
-          .collection('messages')
-          .add(messageData);
-    }
-  }
-
-  void showResponseOptions(List<Map<String, dynamic>> matchedResponses) {
-    showDialog(
-      context: context,
-      builder: (context) {
-        return AlertDialog(
-          title: Text(
-            "Multiple responses found",
-            style: TextStyle(fontWeight: FontWeight.bold),
-          ),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                "Please choose the response you want based on your inquiry:",
-                style: TextStyle(fontSize: 14),
-              ),
-              SizedBox(height: 10),
-              ...matchedResponses.map((response) {
-                return Container(
-                  margin: EdgeInsets.only(bottom: 8),
-                  width: double.infinity,
-                  child: ElevatedButton(
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.green,
-                      foregroundColor: Colors.white,
-                    ),
-                    onPressed: () {
-                      Navigator.pop(context);
-
-                      // ✅ Build message data with follow_up
-                      Map<String, dynamic> messageData = {
-                        'sender': 'Bot',
-                        'text': response['text'] ?? 'No response found',
-                        'timestamp': FieldValue.serverTimestamp(),
-                      };
-
-                      // ✅ Add follow_up if it exists
-                      if (response.containsKey('follow_up') &&
-                          response['follow_up'] != null) {
-                        messageData['follow_up'] = response['follow_up'];
-                      }
-
-                      // Save to Firestore with follow_up
-                      FirebaseFirestore.instance
-                          .collection('Users')
-                          .doc(studId)
-                          .collection('messages')
-                          .add(messageData);
-
-                      setState(() {
-                        _isTyping = false;
-                      });
-                    },
-                    child: Text(response['text'] ?? 'Suggested Response'),
-                  ),
-                );
-              }),
-            ],
-          ),
-        );
-      },
-    );
-  }
-
-  Future<Map<String, dynamic>> getBotResponse(String message) async {
-    final firestore = FirebaseFirestore.instance;
-    final responses = await firestore.collection('chatbot_responses').get();
-
-    List<Map<String, dynamic>> matchedResponses = [];
-    int maxMatches = 0;
-
-    for (var doc in responses.docs) {
-      final keywords = List<String>.from(doc['keywords']);
-      int matches = 0;
-
-      for (var keyword in keywords) {
-        if (message.trim().toLowerCase().contains(keyword.toLowerCase())) {
-          matches++;
-        }
-      }
-
-      if (matches > 0) {
-        if (matches >= maxMatches) {
-          if (matches > maxMatches) {
-            matchedResponses.clear();
-          }
-
-          matchedResponses.add({
-            'text': doc['response'] ?? 'No response found',
-            'title': doc['title'] ?? 'Suggested Topic',
-            'follow_up': doc.data().containsKey('follow_up')
-                ? List<String>.from(
-                    (doc['follow_up'] as List).whereType<String>(),
-                  )
-                : null,
-          });
-
-          maxMatches = matches;
-        }
-      }
+    // Suggestion chips (AI-generated or admin-authored)
+    if (botResponse['follow_up'] != null) {
+      messageData['follow_up'] = botResponse['follow_up'];
     }
 
-    if (matchedResponses.isEmpty) {
-      // Return a CONSISTENT message that we can check for later
+    // 🚩 Mark crisis replies so the UI can offer a direct counselor path
+    if (botResponse['crisis'] == true) {
+      messageData['crisis'] = true;
+    }
+
+    // Replies that should always offer the "Contact My Counselor" button
+    if (botResponse['escalate'] == true) {
+      messageData['escalate'] = true;
+    }
+
+    // Which path produced this reply: 'ai' | 'rule' | 'crisis' | 'error'
+    if (botResponse['src'] != null) {
+      messageData['src'] = botResponse['src'];
+    }
+
+    await FirebaseFirestore.instance
+        .collection('Users')
+        .doc(studId)
+        .collection('messages')
+        .add(messageData);
+  }
+
+  /// NLP chatbot pipeline:
+  /// [1] local crisis pre-check → [2] Firestore RAG retrieval →
+  /// [3] Groq AI call (via Supabase edge proxy) → [4] local crisis post-check →
+  /// [5] rule-based fallback if the AI call fails.
+  Future<Map<String, dynamic>> _computeBotResponse(
+    String userMessage,
+    List<Map<String, dynamic>> history,
+  ) async {
+    // [1] Crisis pre-check — deterministic, never reaches the model.
+    final preCrisis = CrisisDetector.preCheck(userMessage);
+    if (preCrisis != null) {
+      await CrisisDetector.logFlaggedEvent(
+        studentId: studId,
+        triggerType: 'pre-check',
+        message: userMessage,
+        severity: preCrisis.severity,
+      );
       return {
-        'text':
-            "I'm sorry, I didn't understand that. Would you like to send this question to your counselor?",
+        'text': CrisisDetector.fixedSafetyResponse(preCrisis),
+        'crisis': true,
+        'src': 'crisis',
       };
     }
 
-    if (matchedResponses.length == 1) {
-      return matchedResponses[0];
+    // [2] RAG: pull relevant school knowledge base entries.
+    final context = await ChatbotKnowledgeService.retrieveContext(userMessage);
+
+    // [3] Groq via the Supabase edge proxy (system prompt lives server-side).
+    final aiResult = await ChatbotAiService.generateReply(
+      userMessage: userMessage,
+      history: history,
+      context: context,
+    );
+
+    if (aiResult == null) {
+      // [5] AI unavailable (offline / quota / proxy error) → rule fallback.
+      try {
+        final rule = await ChatbotKnowledgeService.ruleFallback(userMessage);
+        rule['src'] = 'rule';
+        return rule;
+      } catch (e) {
+        return {
+          'text':
+              "I'm sorry, I didn't understand that. Would you like to send this question to your counselor?",
+          'escalate': true,
+          'src': 'error',
+        };
+      }
     }
 
-    return {'responses': matchedResponses};
+    final aiText = aiResult['text'] as String;
+
+    // [4] Post-check on the model's own output.
+    final postCrisis = CrisisDetector.postCheck(aiText);
+    if (postCrisis != null) {
+      await CrisisDetector.logFlaggedEvent(
+        studentId: studId,
+        triggerType: 'post-check',
+        message: aiText,
+        severity: postCrisis.severity,
+      );
+      return {
+        'text': CrisisDetector.fixedSafetyResponse(postCrisis),
+        'crisis': true,
+        'src': 'crisis',
+      };
+    }
+
+    return {
+      'text': aiText,
+      'src': 'ai',
+      if (aiResult['follow_up'] != null)
+        'follow_up': aiResult['follow_up'],
+    };
   }
 
   Future<void> escalateInquiry(String originalMessage) async {
@@ -437,7 +420,6 @@ class _ChatbotFABState extends State<ChatbotFAB> {
                               messages: currentMessages,
                               controller: _controller,
                               isTyping: _isTyping,
-                              dotIndex: _dotIndex,
                               userName: userName,
                               onSendMessage: ({String? prefilled}) async {
                                 await sendMessage(prefilled: prefilled);
@@ -463,7 +445,6 @@ class ChatbotDialog extends StatefulWidget {
   final List<Map<String, dynamic>> messages;
   final TextEditingController controller;
   final bool isTyping;
-  final int dotIndex;
   final String userName;
   final Function({String? prefilled}) onSendMessage;
   final Function(String) onEscalate;
@@ -473,7 +454,6 @@ class ChatbotDialog extends StatefulWidget {
     required this.messages,
     required this.controller,
     required this.isTyping,
-    required this.dotIndex,
     required this.userName,
     required this.onSendMessage,
     required this.onEscalate,
@@ -484,8 +464,7 @@ class ChatbotDialog extends StatefulWidget {
 }
 
 class TypingIndicator extends StatefulWidget {
-  final int dotIndex;
-  const TypingIndicator({super.key, required this.dotIndex});
+  const TypingIndicator({super.key});
 
   @override
   _TypingIndicatorState createState() => _TypingIndicatorState();
@@ -709,9 +688,7 @@ class _ChatbotDialogState extends State<ChatbotDialog> {
                                         color: Colors.blue,
                                         borderRadius: BorderRadius.circular(15),
                                       ),
-                                      child: TypingIndicator(
-                                        dotIndex: widget.dotIndex,
-                                      ),
+                                      child: TypingIndicator(),
                                     ),
                                   ],
                                 ),
@@ -786,12 +763,12 @@ class _ChatbotDialogState extends State<ChatbotDialog> {
                                               ),
                                             ),
 
-                                            // ✅ NEW: Check if message is the "unknown response" message
+                                            // 🚩 Offer the direct counselor path
+                                            // on crisis or flagged replies
+                                            // (flag-based, not text matching).
                                             if (message['sender'] == 'Bot' &&
-                                                message['text'] != null &&
-                                                message['text'].contains(
-                                                  "I'm sorry, I didn't understand that",
-                                                ))
+                                                (message['crisis'] == true ||
+                                                    message['escalate'] == true))
                                               Padding(
                                                 padding: const EdgeInsets.only(
                                                   top: 8.0,
@@ -802,7 +779,10 @@ class _ChatbotDialogState extends State<ChatbotDialog> {
                                                         backgroundColor:
                                                             Colors.white,
                                                         foregroundColor:
-                                                            Colors.blue,
+                                                            message['crisis'] ==
+                                                                    true
+                                                                ? Colors.red
+                                                                : Colors.blue,
                                                         padding:
                                                             EdgeInsets.symmetric(
                                                               horizontal: 12,
@@ -814,7 +794,9 @@ class _ChatbotDialogState extends State<ChatbotDialog> {
                                                     size: 18,
                                                   ),
                                                   label: Text(
-                                                    'Contact My Counselor',
+                                                    message['crisis'] == true
+                                                        ? 'Talk to My Counselor Now'
+                                                        : 'Contact My Counselor',
                                                   ),
                                                   onPressed: () {
                                                     // Get the previous user message
@@ -881,6 +863,44 @@ class _ChatbotDialogState extends State<ChatbotDialog> {
                         ),
                       ),
                       SizedBox(height: 12),
+                      // 💬 Always-available counselor path — students should
+                      // never have to hunt for help.
+                      SizedBox(
+                        width: double.infinity,
+                        child: OutlinedButton.icon(
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: Colors.blue[900],
+                            side: BorderSide(
+                              color: const Color.fromARGB(255, 25, 118, 210),
+                            ),
+                            padding: EdgeInsets.symmetric(vertical: 10),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                          ),
+                          icon: Icon(Icons.person_add_alt, size: 18),
+                          label: Text('Talk to my counselor'),
+                          onPressed: () {
+                            // Send along the last thing the student said so
+                            // the counselor has context; otherwise a generic
+                            // request is escalated.
+                            String lastUserMessage = '';
+                            for (final m in widget.messages.reversed) {
+                              if (m['sender'] == 'User') {
+                                lastUserMessage =
+                                    (m['text'] ?? '').toString();
+                                break;
+                              }
+                            }
+                            if (lastUserMessage.trim().isEmpty) {
+                              lastUserMessage =
+                                  'Student tapped "Talk to my counselor" in the chatbot.';
+                            }
+                            widget.onEscalate(lastUserMessage);
+                          },
+                        ),
+                      ),
+                      SizedBox(height: 8),
                       SafeArea(
                         child: TextField(
                           controller: widget.controller,
