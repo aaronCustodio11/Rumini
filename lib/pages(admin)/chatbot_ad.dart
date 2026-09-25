@@ -17,6 +17,10 @@ class _ChatbotAdState extends State<ChatbotAd> {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   List<Map<String, dynamic>> _chatbotResponses = [];
 
+  // 📚 Knowledge base tab (chatbot_knowledge_base — feeds the AI's RAG)
+  List<Map<String, dynamic>> _knowledgeBase = [];
+  String kbSearchQuery = "";
+
   String searchQuery = "";
   final ScrollController _scrollController = ScrollController();
 
@@ -24,6 +28,7 @@ class _ChatbotAdState extends State<ChatbotAd> {
   void initState() {
     super.initState();
     _fetchChatbotData();
+    _fetchKnowledgeBase();
   }
 
   @override
@@ -57,36 +62,41 @@ class _ChatbotAdState extends State<ChatbotAd> {
     }
   }
 
-  Future<void> _saveToFirestore() async {
-    String title = _titleController.text.trim();
-    String response = _responseController.text.trim();
-
-    if (title.isEmpty || response.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Please fill in Title and Response")),
-      );
-      return;
-    }
-
-    Map<String, dynamic> data = {
-      'title': title,
-      'response': response,
-      'timestamp': FieldValue.serverTimestamp(),
-    };
-
+  Future<void> _fetchKnowledgeBase() async {
     try {
-      await _firestore.collection('chatbot_responses').add(data);
-      _titleController.clear();
-      _responseController.clear();
-      _fetchChatbotData();
+      final snapshot =
+          await _firestore.collection('chatbot_knowledge_base').get();
+      final entries = snapshot.docs.map((doc) {
+        final data = doc.data();
+        return {
+          'id': doc.id,
+          'category': data['category'] ?? 'faq',
+          'title': data['title'] ?? 'No Title',
+          'language': data['language'] ?? 'any',
+          'keywords': data['keywords'] is List
+              ? List<String>.from(
+                  (data['keywords'] as List).whereType<String>(),
+                )
+              : <String>[],
+          'active': data['active'] != false,
+          'content': data['content'] ?? '',
+          'timestamp': data['timestamp'],
+        };
+      }).toList();
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Saved Successfully!")),
-      );
+      // Newest first when timestamp is present.
+      entries.sort((a, b) {
+        final ta = a['timestamp'];
+        final tb = b['timestamp'];
+        if (ta is Timestamp && tb is Timestamp) {
+          return tb.compareTo(ta);
+        }
+        return 0;
+      });
+
+      if (mounted) setState(() => _knowledgeBase = entries);
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text("Error: $e")),
-      );
+      print('Error fetching knowledge base: $e');
     }
   }
 
@@ -875,6 +885,466 @@ class _ChatbotAdState extends State<ChatbotAd> {
     );
   }
 
+  // ==========================================================================
+  // 📚 Knowledge Base tab — CRUD for chatbot_knowledge_base (the RAG source
+  // the AI reads from; these entries are injected as reference material).
+  // ==========================================================================
+  Future<void> _showKbEntryDialog({Map<String, dynamic>? entry}) async {
+    final isEdit = entry != null;
+    final titleController = TextEditingController(text: entry?['title'] ?? '');
+    final contentController = TextEditingController(
+      text: entry?['content'] ?? '',
+    );
+    final keywordsController = TextEditingController(
+      text: ((entry?['keywords'] as List?) ?? const [])
+          .whereType<String>()
+          .join(', '),
+    );
+    String category = (entry?['category'] ?? 'faq').toString();
+    bool active = entry?['active'] != false;
+
+    const categories = ['faq', 'policy', 'resource', 'hotline', 'guidance'];
+
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (dialogContext, setDialogState) {
+            return Dialog(
+              child: ConstrainedBox(
+                constraints: BoxConstraints(
+                  maxWidth: MediaQuery.of(dialogContext).size.width * 0.9,
+                  maxHeight: MediaQuery.of(dialogContext).size.height * 0.9,
+                ),
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.all(20),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        isEdit ? 'Edit Knowledge Entry' : 'Add Knowledge Entry',
+                        style: const TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        'Reference material the AI chatbot reads before replying.',
+                        style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                      ),
+                      const SizedBox(height: 16),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: DropdownButtonFormField<String>(
+                              initialValue: categories.contains(category)
+                                  ? category
+                                  : 'faq',
+                              decoration: const InputDecoration(
+                                labelText: 'Category',
+                                border: OutlineInputBorder(),
+                              ),
+                              items: categories
+                                  .map(
+                                    (c) => DropdownMenuItem(
+                                      value: c,
+                                      child: Text(c),
+                                    ),
+                                  )
+                                  .toList(),
+                              onChanged: (v) => setDialogState(
+                                () => category = v ?? 'faq',
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Row(
+                            children: [
+                              const Text('Active'),
+                              Switch(
+                                value: active,
+                                onChanged: (v) =>
+                                    setDialogState(() => active = v),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: titleController,
+                        decoration: const InputDecoration(
+                          labelText: 'Title *',
+                          border: OutlineInputBorder(),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: keywordsController,
+                        decoration: const InputDecoration(
+                          labelText: 'Keywords (comma-separated) *',
+                          border: OutlineInputBorder(),
+                          helperText:
+                              'e.g. appointment, book, paano mag-book',
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: contentController,
+                        maxLines: 6,
+                        decoration: const InputDecoration(
+                          labelText: 'Content (sent to the AI) *',
+                          border: OutlineInputBorder(),
+                          alignLabelWithHint: true,
+                        ),
+                      ),
+                      const SizedBox(height: 20),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.end,
+                        children: [
+                          TextButton(
+                            onPressed: () => Navigator.pop(dialogContext, false),
+                            child: const Text('Cancel'),
+                          ),
+                          const SizedBox(width: 8),
+                          ElevatedButton.icon(
+                            onPressed: () {
+                              if (titleController.text.trim().isEmpty ||
+                                  contentController.text.trim().isEmpty ||
+                                  keywordsController.text.trim().isEmpty) {
+                                ScaffoldMessenger.of(dialogContext)
+                                    .showSnackBar(
+                                  const SnackBar(
+                                    content: Text(
+                                      'Please fill in Title, Keywords and Content',
+                                    ),
+                                  ),
+                                );
+                                return;
+                              }
+                              Navigator.pop(dialogContext, true);
+                            },
+                            icon: const Icon(Icons.save),
+                            label: Text(
+                              isEdit ? 'Save Changes' : 'Add Entry',
+                            ),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: const Color(0xFF56ab2f),
+                              foregroundColor: Colors.white,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+
+    if (saved == true) {
+      final keywords = keywordsController.text
+          .split(',')
+          .map((s) => s.trim())
+          .where((s) => s.isNotEmpty)
+          .toList();
+      final data = {
+        'category': category,
+        'title': titleController.text.trim(),
+        'language': 'any',
+        'keywords': keywords,
+        'active': active,
+        'content': contentController.text.trim(),
+        'timestamp': FieldValue.serverTimestamp(),
+      };
+
+      try {
+        if (isEdit) {
+          await _firestore
+              .collection('chatbot_knowledge_base')
+              .doc(entry['id'])
+              .update(data);
+        } else {
+          await _firestore.collection('chatbot_knowledge_base').add(data);
+        }
+        await _fetchKnowledgeBase();
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(isEdit ? 'Entry updated' : 'Entry added'),
+            ),
+          );
+        }
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text('Error: $e')));
+        }
+      }
+    }
+
+    titleController.dispose();
+    contentController.dispose();
+    keywordsController.dispose();
+  }
+
+  Future<void> _showKbDeleteDialog(String id, String title) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Delete Knowledge Entry?'),
+        content: Text(
+          'Delete "$title"? It will no longer be used as reference material '
+          'by the AI chatbot.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.red,
+              foregroundColor: Colors.white,
+            ),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed == true) {
+      try {
+        await _firestore
+            .collection('chatbot_knowledge_base')
+            .doc(id)
+            .delete();
+        await _fetchKnowledgeBase();
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text('Error: $e')));
+        }
+      }
+    }
+  }
+
+  Widget _buildKnowledgeTab(bool isSmallScreen) {
+    final filtered = _knowledgeBase
+        .where(
+          (e) =>
+              (e['title'] ?? '').toString().toLowerCase().contains(kbSearchQuery),
+        )
+        .toList();
+
+    return Column(
+      children: [
+        // Search + Add row
+        Container(
+          width: double.infinity,
+          padding: EdgeInsets.all(isSmallScreen ? 8.0 : 16.0),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(12.0),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black12,
+                blurRadius: 6.0,
+                offset: Offset(0, 4),
+              ),
+            ],
+          ),
+          child: Row(
+            children: [
+              Expanded(
+                flex: 2,
+                child: Container(
+                  height: 45,
+                  decoration: BoxDecoration(
+                    border: Border.all(color: Colors.grey.shade300),
+                    borderRadius: BorderRadius.circular(25.0),
+                  ),
+                  padding: const EdgeInsets.symmetric(horizontal: 12.0),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.search, color: Colors.grey),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: TextField(
+                          decoration: const InputDecoration(
+                            hintText: "Search knowledge base...",
+                            border: InputBorder.none,
+                            contentPadding:
+                                EdgeInsets.symmetric(vertical: 8.0),
+                          ),
+                          onChanged: (value) {
+                            setState(() {
+                              kbSearchQuery = value.toLowerCase();
+                            });
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              SizedBox(width: isSmallScreen ? 8.0 : 16.0),
+              ElevatedButton(
+                onPressed: () => _showKbEntryDialog(),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF56ab2f),
+                  padding: EdgeInsets.symmetric(
+                    horizontal: isSmallScreen ? 12.0 : 16.0,
+                    vertical: isSmallScreen ? 10.0 : 12.0,
+                  ),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8.0),
+                  ),
+                ),
+                child: Text(
+                  'Add Knowledge',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: isSmallScreen ? 14.0 : 16.0,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+
+        const SizedBox(height: 20),
+
+        Expanded(
+          child: Container(
+            width: double.infinity,
+            padding: EdgeInsets.all(isSmallScreen ? 8.0 : 16.0),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(12.0),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black12,
+                  blurRadius: 6.0,
+                  offset: Offset(0, 4),
+                ),
+              ],
+            ),
+            child: filtered.isEmpty
+                ? Center(
+                    child: Text(
+                      _knowledgeBase.isEmpty
+                          ? 'No knowledge entries yet — the AI starts with the seeded FAQs.'
+                          : 'No matching entries.',
+                      textAlign: TextAlign.center,
+                    ),
+                  )
+                : ListView.builder(
+                    itemCount: filtered.length,
+                    itemBuilder: (context, index) {
+                      final entry = filtered[index];
+                      final keywords = (entry['keywords'] as List)
+                          .whereType<String>()
+                          .join(', ');
+                      final isActive = entry['active'] == true;
+                      final ts = entry['timestamp'];
+                      final updated = ts is Timestamp
+                          ? ' • Updated ${timeago.format(ts.toDate())}'
+                          : '';
+
+                      return Card(
+                        margin: const EdgeInsets.only(bottom: 10.0),
+                        child: ListTile(
+                          contentPadding: EdgeInsets.all(
+                            isSmallScreen ? 8.0 : 10.0,
+                          ),
+                          leading: Icon(
+                            isActive ? Icons.menu_book : Icons.menu_book_outlined,
+                            color: isActive ? Color(0xFF56ab2f) : Colors.grey,
+                          ),
+                          title: Text(
+                            '${entry['title']}  (${entry['category']})',
+                            style: TextStyle(
+                              fontSize: isSmallScreen ? 15.0 : 17.0,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          subtitle: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'Keywords: $keywords$updated',
+                                style: const TextStyle(fontSize: 12.0),
+                              ),
+                              Text(
+                                (entry['content'] ?? '').toString().length > 120
+                                    ? '${(entry['content'] as String).substring(0, 120)}...'
+                                    : (entry['content'] ?? '').toString(),
+                                style: TextStyle(
+                                  fontSize: 12.0,
+                                  color: Colors.grey[700],
+                                ),
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ],
+                          ),
+                          trailing: Wrap(
+                            spacing: 6,
+                            crossAxisAlignment: WrapCrossAlignment.center,
+                            children: [
+                              Tooltip(
+                                message: isActive
+                                    ? 'Active — shown to the AI'
+                                    : 'Inactive — hidden from the AI',
+                                child: Switch(
+                                  value: isActive,
+                                  activeThumbColor: const Color(0xFF56ab2f),
+                                  onChanged: (v) async {
+                                    await _firestore
+                                        .collection('chatbot_knowledge_base')
+                                        .doc(entry['id'])
+                                        .update({'active': v});
+                                    await _fetchKnowledgeBase();
+                                  },
+                                ),
+                              ),
+                              IconButton(
+                                icon: const Icon(Icons.edit),
+                                color: Colors.blue,
+                                onPressed: () =>
+                                    _showKbEntryDialog(entry: entry),
+                              ),
+                              IconButton(
+                                icon: const Icon(Icons.delete),
+                                color: const Color.fromARGB(255, 235, 70, 58),
+                                onPressed: () => _showKbDeleteDialog(
+                                  entry['id'],
+                                  entry['title'],
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+          ),
+        ),
+      ],
+    );
+  }
+  // ==========================================================================
+
   @override
   Widget build(BuildContext context) {
     // Get the current screen size
@@ -882,7 +1352,9 @@ class _ChatbotAdState extends State<ChatbotAd> {
     final bool isSmallScreen = screenSize.width < 600;
     final double contentPadding = isSmallScreen ? 8.0 : 20.0;
 
-    return Scaffold(
+    return DefaultTabController(
+      length: 2,
+      child: Scaffold(
       
       body: Container(
         width: double.infinity,
@@ -928,6 +1400,46 @@ class _ChatbotAdState extends State<ChatbotAd> {
                         ),
                       ),
 
+                    // Tab bar — Rule Responses | Knowledge Base
+                    Container(
+                      width: double.infinity,
+                      decoration: const BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.vertical(
+                          top: Radius.circular(12.0),
+                        ),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black12,
+                            blurRadius: 6.0,
+                            offset: Offset(0, 4),
+                          ),
+                        ],
+                      ),
+                      child: const TabBar(
+                        labelColor: Color(0xFF56ab2f),
+                        unselectedLabelColor: Colors.grey,
+                        indicatorColor: Color(0xFF56ab2f),
+                        tabs: [
+                          Tab(
+                            icon: Icon(Icons.chat_bubble_outline),
+                            text: 'Rule Responses',
+                          ),
+                          Tab(
+                            icon: Icon(Icons.menu_book_outlined),
+                            text: 'Knowledge Base',
+                          ),
+                        ],
+                      ),
+                    ),
+
+                    // Tabs content: Rule Responses | Knowledge Base
+                    Expanded(
+                      child: TabBarView(
+                        children: [
+                          // Tab 1 — rule responses
+                          Column(
+                            children: [
                     // Row with Search Card and Add Response Button side by side
                     Container(
                       width: double.infinity,
@@ -1121,6 +1633,13 @@ class _ChatbotAdState extends State<ChatbotAd> {
                               ),
                       ),
                     ),
+                            ],
+                          ),
+                          // Tab 2 — knowledge base
+                          _buildKnowledgeTab(isSmallScreen),
+                        ],
+                      ),
+                    ),
                   ],
                 ),
               ),
@@ -1128,6 +1647,7 @@ class _ChatbotAdState extends State<ChatbotAd> {
           ],
         ),
       ),
+    ),
     );
   }
 }
