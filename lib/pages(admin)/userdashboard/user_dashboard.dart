@@ -1,7 +1,7 @@
 import 'dart:convert';
 import 'dart:ui';
 import 'package:rumini/helper/helper_functions.dart';
-import 'dart:js_interop';
+import 'dashboard_web.dart' if (dart.library.io) 'dashboard_android.dart';
 import 'package:rumini/main.dart';
 import 'package:rumini/pages(admin)/userdashboard/userdashboard_Analytics.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -18,7 +18,6 @@ import 'package:path_provider/path_provider.dart';
 import 'package:open_file/open_file.dart'; // Import open_file package
 import 'dart:typed_data';
 import 'package:flutter/foundation.dart' show kIsWeb;
-import 'package:web/web.dart' as web;
 
 class UserDashboard extends StatefulWidget {
   final Map<String, dynamic> userData;
@@ -1967,15 +1966,7 @@ class _UserDashboardState extends State<UserDashboard> {
 
     if (kIsWeb) {
       // Web: Create a downloadable blob
-      final bytes = utf8.encode(csv);
-      final jsArray = bytes.toJS;
-      final blob = web.Blob([jsArray].toJS);
-      final url = web.URL.createObjectURL(blob);
-      final anchor = web.HTMLAnchorElement()
-        ..href = url
-        ..download = "student_batch_upload_sample.csv"
-        ..click();
-      web.URL.revokeObjectURL(url);
+      await downloadCsvWeb(csv, "student_batch_upload_sample.csv");
     } else {
       // Mobile/Desktop: Save to file
       final Directory tempDir = await getTemporaryDirectory();
@@ -2017,15 +2008,7 @@ class _UserDashboardState extends State<UserDashboard> {
 
     if (kIsWeb) {
       // Web: Create a downloadable blob
-      final bytes = utf8.encode(csv);
-      final jsArray = bytes.toJS;
-      final blob = web.Blob([jsArray].toJS);
-      final url = web.URL.createObjectURL(blob);
-      final anchor = web.HTMLAnchorElement()
-        ..href = url
-        ..download = "staff_batch_upload_sample.csv"
-        ..click();
-      web.URL.revokeObjectURL(url);
+      await downloadCsvWeb(csv, "staff_batch_upload_sample.csv");
     } else {
       // Mobile/Desktop: Save to file
       final Directory tempDir = await getTemporaryDirectory();
@@ -2209,147 +2192,10 @@ class _UserDashboardState extends State<UserDashboard> {
   Future<void> batchUploadCSV(Map<String, dynamic> userData) async {
     if (kIsWeb) {
       // Web file picker with loading dialog
-      showDialog(
+      pickCsvWebFlow(
         context: context,
-        barrierDismissible: false,
-        builder: (BuildContext context) {
-          return AlertDialog(
-            title: Text("Selecting File..."),
-            content: Row(
-              children: [
-                CircularProgressIndicator(),
-                SizedBox(width: 20),
-                Text("Please select a CSV file"),
-              ],
-            ),
-          );
-        },
-      );
-
-      final uploadInput = web.HTMLInputElement()
-        ..type = 'file'
-        ..accept = '.csv';
-      uploadInput.click();
-
-      uploadInput.addEventListener(
-        'change',
-        ((web.Event event) {
-          // Close the loading dialog
-          Navigator.pop(context);
-
-          final files = uploadInput.files;
-          if (files == null || files.length == 0) return;
-
-          // Show processing dialog
-          showDialog(
-            context: context,
-            barrierDismissible: false,
-            builder: (BuildContext context) {
-              return AlertDialog(
-                title: Text("Processing..."),
-                content: Row(
-                  children: [
-                    CircularProgressIndicator(),
-                    SizedBox(width: 20),
-                    Text("Uploading and processing CSV data"),
-                  ],
-                ),
-              );
-            },
-          );
-
-          try {
-            final file = files.item(0);
-            if (file == null) {
-              Navigator.pop(context);
-              return;
-            }
-
-            // Validate file type
-            if (!file.name.toLowerCase().endsWith('.csv')) {
-              Navigator.pop(context);
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                  backgroundColor: Colors.red,
-                  content: Text("Please select a valid CSV file"),
-                ),
-              );
-              return;
-            }
-
-            final reader = web.FileReader();
-
-            reader.addEventListener(
-              'loadend',
-              ((web.Event e) {
-                try {
-                  Navigator.pop(context);
-
-                  // Get the result - CRITICAL FIX HERE
-                  final result = reader.result;
-                  if (result == null) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        backgroundColor: Colors.red,
-                        content: Text("Failed to read file"),
-                      ),
-                    );
-                    return;
-                  }
-
-                  // Convert JSString to Dart String for WASM
-                  final csvString = (result as JSString).toDart;
-
-                  if (csvString.isNotEmpty) {
-                    Future.microtask(() => processCSVData(csvString, userData));
-                  } else {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        backgroundColor: Colors.red,
-                        content: Text("CSV file is empty"),
-                      ),
-                    );
-                  }
-                } catch (e) {
-                  print('Error in loadend: $e');
-                  Navigator.pop(context);
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      backgroundColor: Colors.red,
-                      content: Text("Error reading file: $e"),
-                    ),
-                  );
-                }
-              }).toJS,
-            );
-
-            reader.addEventListener(
-              'error',
-              ((web.Event e) {
-                print('FileReader error event');
-                Navigator.pop(context);
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                    backgroundColor: Colors.red,
-                    content: Text("Error loading file"),
-                  ),
-                );
-              }).toJS,
-            );
-
-            // Read the file as text
-            reader.readAsText(file);
-          } catch (e) {
-            print('Error in change event: $e');
-            Navigator.pop(context);
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                backgroundColor: Colors.red,
-                content: Text("Error selecting file: $e"),
-              ),
-            );
-          }
-        }).toJS,
+        userData: userData,
+        onCsv: processCSVData,
       );
     } else {
       // Mobile/Desktop file picker
@@ -3747,37 +3593,11 @@ class _UserDashboardState extends State<UserDashboard> {
           // Pick image function (web and mobile)
           Future<void> pickImage() async {
             if (kIsWeb) {
-              final uploadInput = web.HTMLInputElement()
-                ..type = 'file'
-                ..accept = 'image/*';
-              uploadInput.click();
-
-              uploadInput.addEventListener(
-                'change',
-                ((web.Event event) {
-                  final files = uploadInput.files;
-                  if (files == null || files.length == 0) return;
-
-                  final file = files.item(0);
-                  if (file == null) return;
-
-                  final reader = web.FileReader();
-                  reader.readAsArrayBuffer(file);
-
-                  reader.addEventListener(
-                    'loadend',
-                    ((web.Event e) {
-                      final result = reader.result;
-                      if (result != null) {
-                        setState(() {
-                          selectedImageBytes = (result as JSArrayBuffer).toDart
-                              .asUint8List();
-                        });
-                      }
-                    }).toJS,
-                  );
-                }).toJS,
-              );
+              pickImageWeb(onBytes: (bytes) {
+                setState(() {
+                  selectedImageBytes = bytes;
+                });
+              });
             } else {
               final result = await FilePicker.platform.pickFiles(
                 type: FileType.image,

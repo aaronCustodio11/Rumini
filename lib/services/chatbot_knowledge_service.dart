@@ -214,10 +214,20 @@ class ChatbotSeedData {
       'category': 'hotline',
       'title': 'Crisis hotlines',
       'language': 'any',
-      'keywords': ['crisis', 'hotline', 'emergency', 'help now', 'lifeline'],
+      'keywords': [
+        'crisis',
+        'hotline',
+        'emergency',
+        'help now',
+        'lifeline',
+        'ncmh',
+      ],
       'active': true,
       'content':
-          'NCMH Crisis Hotline: 1553 (toll-free, 24/7). Emergency: 911. '
+          'If this is an emergency, kindly call the NCMH Hotlines: '
+          '09178998727 / (02) 78988727 / 1553. Counseling are scheduled from '
+          '9:00am-2:00pm. Pls wait for the counselor to message you. '
+          'Thank you very much! '
           'If a student is in immediate danger, always surface these numbers '
           'and offer to connect them with their guidance counselor.',
     },
