@@ -38,6 +38,7 @@
     }
   ],
   "hosting": {
+    "site": "rumini-5f6ff",
     "public": "build/web",
     "ignore": [
       "firebase.json",

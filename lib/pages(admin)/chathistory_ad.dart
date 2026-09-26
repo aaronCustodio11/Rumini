@@ -36,6 +36,10 @@ class _ChatHistoryAdState extends State<ChatHistoryAd> {
   List<Map<String, dynamic>> escalations = [];
   // ==========================================
 
+  // 🚩 Crisis-flagged chatbot events (chatbot_flagged_events)
+  int flaggedCount = 0;
+  List<Map<String, dynamic>> flaggedEvents = [];
+
   @override
   void initState() {
     super.initState();
@@ -50,6 +54,9 @@ class _ChatHistoryAdState extends State<ChatHistoryAd> {
   Future<void> _fetchInitialData() async {
     await _fetchUserRole();
     await Future.wait([_fetchStaffDetails(), _fetchStudents()]);
+
+    // Flagged events need role + student list for counselor filtering.
+    _listenToFlaggedEvents();
 
     if (selectedStudent != null) {
       await _loadChatHistory(selectedStudent!['userId']);
@@ -200,11 +207,17 @@ class _ChatHistoryAdState extends State<ChatHistoryAd> {
 
       final history = messagesSnapshot.docs.map((doc) {
         final data = doc.data();
+        final ts = data['timestamp'];
         return {
           'sender': data['sender'] ?? 'Unknown',
           'text': data['text'] ?? '',
-          'timestamp': (data['timestamp'] as Timestamp).toDate(),
+          'timestamp': ts is Timestamp
+              ? ts.toDate()
+              : DateTime.now(), // pending serverTimestamp
           'isEscalation': false, // Mark as regular message
+          // Safety context for staff: which path answered + crisis flag
+          'crisis': data['crisis'] == true,
+          'src': data['src'] ?? '',
         };
       }).toList();
 
@@ -558,6 +571,292 @@ class _ChatHistoryAdState extends State<ChatHistoryAd> {
   }
   // ==========================================
 
+  // ==========================================================================
+  // 🚩 Crisis-flagged events — real-time list of chatbot safety interceptions
+  // ==========================================================================
+  void _listenToFlaggedEvents() {
+    FirebaseFirestore.instance
+        .collection('chatbot_flagged_events')
+        .orderBy('timestamp', descending: true)
+        .limit(100)
+        .snapshots()
+        .listen((snapshot) {
+          if (!mounted) return;
+
+          final all = snapshot.docs.map((doc) {
+            final data = doc.data();
+            return {
+              'id': doc.id,
+              'studentId': data['studentId'] ?? '',
+              'triggerType': data['triggerType'] ?? '',
+              'severity': data['severity'] ?? 'medium',
+              'messageSnippet': data['messageSnippet'] ?? '',
+              'timestamp': data['timestamp'],
+              'reviewed': data['reviewedByCounselor'] == true,
+            };
+          }).toList();
+
+          // Counselor: only events from their assigned students.
+          final assigned = students.map((s) => s['userId']).toSet();
+          final visible = userRole == 'Counselor'
+              ? all
+                    .where((e) => assigned.contains(e['studentId']))
+                    .toList()
+              : all;
+
+          setState(() {
+            flaggedEvents = visible;
+            flaggedCount = visible.where((e) => e['reviewed'] != true).length;
+          });
+        });
+  }
+
+  String _flagStudentName(dynamic studentId) {
+    for (final s in students) {
+      if (s['userId'] == studentId) {
+        return '${s['firstName']} ${s['lastName']}'.trim();
+      }
+    }
+    return 'Unknown student';
+  }
+
+  Future<void> _markFlagReviewed(String eventId) async {
+    try {
+      await FirebaseFirestore.instance
+          .collection('chatbot_flagged_events')
+          .doc(eventId)
+          .update({
+            'reviewedByCounselor': true,
+            'reviewedAt': FieldValue.serverTimestamp(),
+            'reviewedBy': loggedInStaffId,
+          });
+    } catch (e) {
+      print('Error marking flagged event as reviewed: $e');
+    }
+  }
+
+  void _showFlaggedModal() {
+    showDialog(
+      context: context,
+      builder: (context) => Dialog(
+        child: Container(
+          width: 500,
+          constraints: const BoxConstraints(maxHeight: 600),
+          child: Column(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: const BoxDecoration(
+                  color: Colors.red,
+                  borderRadius: BorderRadius.only(
+                    topLeft: Radius.circular(4),
+                    topRight: Radius.circular(4),
+                  ),
+                ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text(
+                      '🚨 Crisis-Flagged Chatbot Events',
+                      style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.white,
+                      ),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.close, color: Colors.white),
+                      onPressed: () => Navigator.pop(context),
+                    ),
+                  ],
+                ),
+              ),
+              Expanded(
+                child: flaggedEvents.isEmpty
+                    ? Center(
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(
+                              Icons.shield_outlined,
+                              size: 64,
+                              color: Colors.green,
+                            ),
+                            const SizedBox(height: 16),
+                            Text(
+                              'No crisis-flagged events',
+                              style: TextStyle(
+                                fontSize: 16,
+                                color: Colors.grey[600],
+                              ),
+                            ),
+                          ],
+                        ),
+                      )
+                    : StatefulBuilder(
+                        builder: (context, setModalState) => ListView.builder(
+                          padding: const EdgeInsets.all(16),
+                          itemCount: flaggedEvents.length,
+                          itemBuilder: (context, index) {
+                            final event = flaggedEvents[index];
+                            final ts = event['timestamp'];
+                            final date = ts is Timestamp ? ts.toDate() : null;
+                            final timeStr = date != null
+                                ? '${date.month}/${date.day}/${date.year} '
+                                      '${date.hour}:${date.minute.toString().padLeft(2, '0')}'
+                                : 'Unknown';
+                            final isHigh = event['severity'] == 'high';
+                            final reviewed = event['reviewed'] == true;
+
+                            return Card(
+                              margin: const EdgeInsets.only(bottom: 12),
+                              elevation: 2,
+                              child: Padding(
+                                padding: const EdgeInsets.all(12),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Row(
+                                      mainAxisAlignment:
+                                          MainAxisAlignment.spaceBetween,
+                                      children: [
+                                        Expanded(
+                                          child: Text(
+                                            _flagStudentName(
+                                              event['studentId'],
+                                            ),
+                                            style: const TextStyle(
+                                              fontWeight: FontWeight.bold,
+                                              fontSize: 16,
+                                            ),
+                                          ),
+                                        ),
+                                        Container(
+                                          padding: const EdgeInsets.symmetric(
+                                            horizontal: 8,
+                                            vertical: 3,
+                                          ),
+                                          decoration: BoxDecoration(
+                                            color: isHigh
+                                                ? Colors.red
+                                                : Colors.orange,
+                                            borderRadius:
+                                                BorderRadius.circular(12),
+                                          ),
+                                          child: Text(
+                                            isHigh ? 'HIGH' : 'MEDIUM',
+                                            style: const TextStyle(
+                                              color: Colors.white,
+                                              fontSize: 11,
+                                              fontWeight: FontWeight.bold,
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      '${event['triggerType']} • $timeStr'
+                                      '${reviewed ? ' • ✓ Reviewed' : ''}',
+                                      style: TextStyle(
+                                        fontSize: 12,
+                                        color: reviewed
+                                            ? Colors.green[700]
+                                            : Colors.grey[600],
+                                      ),
+                                    ),
+                                    const SizedBox(height: 8),
+                                    Container(
+                                      width: double.infinity,
+                                      padding: const EdgeInsets.all(12),
+                                      decoration: BoxDecoration(
+                                        color: Colors.red[50],
+                                        borderRadius: BorderRadius.circular(8),
+                                        border: Border.all(
+                                          color: Colors.red.shade200,
+                                        ),
+                                      ),
+                                      child: Text(
+                                        '"${event['messageSnippet']}"',
+                                        style: const TextStyle(fontSize: 14),
+                                      ),
+                                    ),
+                                    const SizedBox(height: 12),
+                                    Row(
+                                      mainAxisAlignment:
+                                          MainAxisAlignment.end,
+                                      children: [
+                                        TextButton.icon(
+                                          icon: const Icon(
+                                            Icons.chat,
+                                            size: 18,
+                                          ),
+                                          label: const Text('Open Chat'),
+                                          onPressed: () {
+                                            Navigator.pop(context);
+                                            final student = students
+                                                .firstWhere(
+                                                  (s) =>
+                                                      s['userId'] ==
+                                                      event['studentId'],
+                                                  orElse: () => {},
+                                                );
+                                            if (student.isNotEmpty) {
+                                              _selectStudent(student);
+                                            }
+                                          },
+                                        ),
+                                        const SizedBox(width: 8),
+                                        if (!reviewed)
+                                          ElevatedButton.icon(
+                                            icon: const Icon(
+                                              Icons.check,
+                                              size: 18,
+                                            ),
+                                            label: const Text(
+                                              'Mark Reviewed',
+                                            ),
+                                            style: ElevatedButton.styleFrom(
+                                              backgroundColor:
+                                                  const Color(0xFF81BF36),
+                                              foregroundColor: Colors.white,
+                                            ),
+                                            onPressed: () async {
+                                              await _markFlagReviewed(
+                                                event['id'],
+                                              );
+                                              setModalState(() {
+                                                flaggedEvents[index]['reviewed']
+                                                    = true;
+                                              });
+                                              setState(() {
+                                                flaggedCount = flaggedEvents
+                                                    .where(
+                                                      (e) =>
+                                                          e['reviewed'] != true,
+                                                    )
+                                                    .length;
+                                              });
+                                            },
+                                          ),
+                                      ],
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+  // ==========================================================================
+
   @override
   void dispose() {
     _scrollController.dispose();
@@ -599,39 +898,79 @@ class _ChatHistoryAdState extends State<ChatHistoryAd> {
                           fontSize: 18,
                         ),
                       ),
-                      // NEW: Notification badge button
-                      Stack(
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
                         children: [
-                          IconButton(
-                            icon: Icon(Icons.notifications_outlined),
-                            onPressed: _showEscalationModal,
-                            tooltip: 'View pending inquiries',
-                          ),
-                          if (pendingEscalationsCount > 0)
-                            Positioned(
-                              right: 6,
-                              top: 6,
-                              child: Container(
-                                padding: EdgeInsets.all(4),
-                                decoration: BoxDecoration(
-                                  color: Colors.red,
-                                  shape: BoxShape.circle,
-                                ),
-                                constraints: BoxConstraints(
-                                  minWidth: 18,
-                                  minHeight: 18,
-                                ),
-                                child: Text(
-                                  pendingEscalationsCount.toString(),
-                                  style: TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 10,
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                  textAlign: TextAlign.center,
-                                ),
+                          // 🚩 Crisis-flagged events
+                          Stack(
+                            children: [
+                              IconButton(
+                                icon: const Icon(Icons.flag_outlined),
+                                onPressed: _showFlaggedModal,
+                                tooltip: 'Crisis-flagged events',
                               ),
-                            ),
+                              if (flaggedCount > 0)
+                                Positioned(
+                                  right: 6,
+                                  top: 6,
+                                  child: Container(
+                                    padding: const EdgeInsets.all(4),
+                                    decoration: const BoxDecoration(
+                                      color: Colors.red,
+                                      shape: BoxShape.circle,
+                                    ),
+                                    constraints: const BoxConstraints(
+                                      minWidth: 18,
+                                      minHeight: 18,
+                                    ),
+                                    child: Text(
+                                      flaggedCount.toString(),
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 10,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                      textAlign: TextAlign.center,
+                                    ),
+                                  ),
+                                ),
+                            ],
+                          ),
+                          // NEW: Notification badge button
+                          Stack(
+                            children: [
+                              IconButton(
+                                icon: Icon(Icons.notifications_outlined),
+                                onPressed: _showEscalationModal,
+                                tooltip: 'View pending inquiries',
+                              ),
+                              if (pendingEscalationsCount > 0)
+                                Positioned(
+                                  right: 6,
+                                  top: 6,
+                                  child: Container(
+                                    padding: EdgeInsets.all(4),
+                                    decoration: BoxDecoration(
+                                      color: Colors.red,
+                                      shape: BoxShape.circle,
+                                    ),
+                                    constraints: BoxConstraints(
+                                      minWidth: 18,
+                                      minHeight: 18,
+                                    ),
+                                    child: Text(
+                                      pendingEscalationsCount.toString(),
+                                      style: TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 10,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                      textAlign: TextAlign.center,
+                                    ),
+                                  ),
+                                ),
+                            ],
+                          ),
                         ],
                       ),
                     ],
@@ -939,6 +1278,33 @@ class _ChatHistoryAdState extends State<ChatHistoryAd> {
                                               crossAxisAlignment:
                                                   CrossAxisAlignment.start,
                                               children: [
+                                                // 🚩 Crisis flag on the
+                                                // message that was intercepted
+                                                if (msg['crisis'] == true)
+                                                  Container(
+                                                    margin: const EdgeInsets
+                                                        .only(bottom: 8),
+                                                    padding:
+                                                        const EdgeInsets.symmetric(
+                                                          horizontal: 8,
+                                                          vertical: 4,
+                                                        ),
+                                                    decoration: BoxDecoration(
+                                                      color: Colors.red,
+                                                      borderRadius:
+                                                          BorderRadius
+                                                              .circular(4),
+                                                    ),
+                                                    child: const Text(
+                                                      '🚨 CRISIS — SAFETY REPLY SENT',
+                                                      style: TextStyle(
+                                                        color: Colors.white,
+                                                        fontSize: 11,
+                                                        fontWeight:
+                                                            FontWeight.bold,
+                                                      ),
+                                                    ),
+                                                  ),
                                                 // NEW: Show status badge for escalations
                                                 if (isEscalation)
                                                   Container(
