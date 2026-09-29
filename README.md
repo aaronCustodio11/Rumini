@@ -1,6 +1,8 @@
 <div align="center">
 
-# 🌱 Rumini
+<img src="readmeAssets/rumini.png" width="160" alt="Rumini" />
+
+# 💚 Rumini
 
 **AI-Powered Guidance Counseling & Mood Tracking Platform**
 
@@ -63,6 +65,45 @@ The goal wasn't to build something flashier — it was to fix the exact weak poi
 - Manage the chatbot's knowledge base (FAQs, resources, crisis keywords) — the same authoring workflow as before, now powering retrieval instead of exact-match rules
 - Manage forms, analytics, and reporting
 - Batch student management via CSV upload
+
+---
+
+## 📸 Screenshots
+
+### 📱 Mobile
+
+<p align="center">
+  <img src="readmeAssets/rumini4.png" width="30%" alt="Rumini mobile screen" />
+  <img src="readmeAssets/rumini5.png" width="30%" alt="Rumini mobile screen" />
+  <img src="readmeAssets/rumini6.png" width="30%" alt="Rumini mobile screen" />
+</p>
+
+<p align="center">
+  <img src="readmeAssets/rumini7.png" width="30%" alt="Rumini mobile screen" />
+  <img src="readmeAssets/rumini8.png" width="30%" alt="Rumini mobile screen" />
+</p>
+
+### 🖥️ Web
+
+<p align="center">
+  <img src="readmeAssets/rumini1.png" width="49%" alt="Rumini web screen" />
+  <img src="readmeAssets/rumini2.png" width="49%" alt="Rumini web screen" />
+</p>
+
+<p align="center">
+  <img src="readmeAssets/rumini3.png" width="49%" alt="Rumini web screen" />
+  <img src="readmeAssets/rumini9.png" width="49%" alt="Rumini web screen" />
+</p>
+
+<p align="center">
+  <img src="readmeAssets/rumini10.png" width="49%" alt="Rumini web screen" />
+  <img src="readmeAssets/rumini11.png" width="49%" alt="Rumini web screen" />
+</p>
+
+<p align="center">
+  <img src="readmeAssets/rumini12.png" width="49%" alt="Rumini web screen" />
+  <img src="readmeAssets/rumini13.png" width="49%" alt="Rumini web screen" />
+</p>
 
 ---
 
@@ -133,11 +174,19 @@ Module-level satisfaction: Student module 3.84, Guidance Counselor module 3.82, 
 
 Represented the IT department at the **CEIT Research Colloquium**, competing against 8 other teams from the Computer Engineering, Electrical Engineering, and Information Technology departments — earned **3rd Place, Best Presentation**.
 
-<!-- Add colloquium photos here, e.g.: -->
-<!-- <p align="center">
-  <img src="assets/colloquium-1.jpg" width="45%" />
-  <img src="assets/colloquium-2.jpg" width="45%" />
-</p> -->
+<p align="center">
+  <img src="readmeAssets/researchColloqium55.jpg" width="55%" alt="CEIT Research Colloquium" />
+</p>
+
+<p align="center">
+  <img src="readmeAssets/researchColloqium2.jpg" width="34%" alt="CEIT Research Colloquium" />
+</p>
+
+<p align="center">
+  <img src="readmeAssets/researchColloqium1.jpg" width="24%" alt="CEIT Research Colloquium certificate" />
+  <img src="readmeAssets/researchColloqium3.jpg" width="24%" alt="CEIT Research Colloquium" />
+  <img src="readmeAssets/researchColloqium4.jpg" width="24%" alt="CEIT Research Colloquium" />
+</p>
 
 ---
 
@@ -182,17 +231,6 @@ flutter run -d chrome    # Web
 - The mood tracker has a separate, student-controlled consent toggle for monitoring visibility.
 - Crisis-related messages are intercepted before reaching the AI model and are handled by a fixed, guidance-office-approved response with emergency contact information.
 - This chatbot is **not** a substitute for professional mental health care — it exists to listen, support, and connect students to real guidance counselors.
-
----
-
-## 🗺️ Roadmap
-
-Carried over from the original evaluation's recommended improvements, plus new items from the NLP migration:
-- [ ] Optimize batch student upload (CSV)
-- [ ] Improve form customization options
-- [ ] Upgrade knowledge base retrieval from keyword matching to semantic/embedding-based search, if coverage needs grow
-- [ ] Expand crisis-keyword coverage with guidance office review
-- [ ] Continued reliability and flexibility improvements per ISO 25010 feedback
 
 ---
 
