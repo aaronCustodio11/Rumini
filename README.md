@@ -234,17 +234,6 @@ flutter run -d chrome    # Web
 
 ---
 
-## 🗺️ Roadmap
-
-Carried over from the original evaluation's recommended improvements, plus new items from the NLP migration:
-- [ ] Optimize batch student upload (CSV)
-- [ ] Improve form customization options
-- [ ] Upgrade knowledge base retrieval from keyword matching to semantic/embedding-based search, if coverage needs grow
-- [ ] Expand crisis-keyword coverage with guidance office review
-- [ ] Continued reliability and flexibility improvements per ISO 25010 feedback
-
----
-
 ## 👥 Team
 
 Originally developed as a capstone project by the Department of Information Technology, Pamantasan ng Lungsod ng Valenzuela:
